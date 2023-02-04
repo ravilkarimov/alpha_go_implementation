@@ -11,14 +11,14 @@ class Move:
     # Any action a player can play o a turn:
     # is_play, is_pass, is_resign
     def __init__(self, point=None, is_pass=False, is_resign=False) -> None:
-        assert point is not None
+        # assert point is not None
         self.point = point
         self.is_play = self.point is not None
         self.is_pass = is_pass
         self.is_resign = is_resign
 
     @classmethod
-    def play(cls, point):
+    def play(cls, point: Point):
         # this move places stone to the board
         return Move(point=point)
 
@@ -97,7 +97,7 @@ class Board:
 
     def _remove_string(self, string: Go_String):
         for point in string.stones:
-            for neighbor in point.neighbours():
+            for neighbor in point.neighbors():
                 neighbor_string = self._grid.get(neighbor)
                 if neighbor_string is None:
                     continue
@@ -113,7 +113,7 @@ class Board:
         adjacent_opposite_color = []
         liberties = []
         # Examine direct neighbors of this point.
-        for neighbor in point.neighbours():
+        for neighbor in point.neighbors():
             if not self.is_on_grid(neighbor):
                 continue
             # TODO: write types
@@ -179,3 +179,40 @@ class GameState:
         if second_last_move is None:
             return False
         return self.last_move.is_pass and second_last_move.is_pass
+
+    def is_move_self_capture(self, player, move):
+        if not move.is_play:
+            return False
+        next_board = copy.deepcopy(self.board)
+        # Capturing game state and checking for illegal moves 39
+        next_board.place_stone(player, move.point)
+        new_string = next_board.get_go_string(move.point)
+        return new_string.num_liberties == 0
+
+    @property
+    def situation(self):
+        return (self.next_player, self.board)
+
+    def does_move_violate_ko(self, player: Player, move: Move) -> bool:
+        if not move.is_play:
+            return False
+        next_board = copy.deepcopy(self.board)
+        next_board.place_stone(player, move.point)
+        next_situation = (player.other, next_board)
+        past_state = self.previous_state
+        while past_state:
+            if past_state.situation == next_situation:
+                return True
+            past_state = past_state.previous_state
+        return False
+
+    def is_valid_move(self, move: Move):
+        if self.is_over():
+            return False
+        if move.is_pass or move.is_resign:
+            return True
+        return (
+            not self.board.get(move.point)
+            and not self.is_move_self_capture(self.next_player, move)
+            and not self.does_move_violate_ko(self.next_player, move)
+        )
