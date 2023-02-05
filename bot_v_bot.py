@@ -16,7 +16,7 @@ def main():
     while not game.is_over():
         # You set a sleep timer to 0.3 seconds so that
         # bot moves aren’t printed too fast to observe.
-        time.sleep(0.3)
+        time.sleep(0.05)
         # Before each move, you clear the screen.
         # This way, the board is always printed to
         # the same position on the command line.

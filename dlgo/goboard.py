@@ -1,6 +1,7 @@
 import copy
-from typing import List, Optional, Set
+from typing import FrozenSet, Optional, Tuple
 
+from dlgo import zobrist
 from dlgo.gotypes import Player, Point
 
 
@@ -36,17 +37,20 @@ class Move:
 # Go strings are a chain of connected stones of the same color
 class GoString:
     def __init__(
-        self, color: Player, stones: List[Point], liberties: List[Point]
+        self, color: Player, stones: FrozenSet[Point], liberties: FrozenSet[Point]
     ) -> None:
-        self.color: Player = color
-        self.stones: Set[Point] = set(stones)
-        self.liberties: Set[Point] = set(liberties)
+        self.color = color
+        self.stones = stones
+        self.liberties = liberties
 
-    def remove_liberty(self, point: Point) -> None:
-        self.liberties.remove(point)
+    # The without_liberty method replaces the previous remove_liberty method
+    def without_liberty(self, point: Point) -> "GoString":
+        new_liberties = self.liberties - {point}
+        return GoString(self.color, self.stones, new_liberties)
 
-    def add_liberty(self, point: Point) -> None:
-        self.liberties.add(point)
+    def with_liberty(self, point: Point) -> "GoString":
+        new_liberties = self.liberties | {point}
+        return GoString(self.color, self.stones, new_liberties)
 
     # Returns new Go_string contaning stones from two strings
     def merge_with(self, go_string: "GoString") -> "GoString":
@@ -54,8 +58,8 @@ class GoString:
         combined_stones = self.stones | go_string.stones
         return GoString(
             self.color,
-            list(combined_stones),
-            list((self.liberties | go_string.liberties) - combined_stones),
+            combined_stones,
+            (self.liberties | go_string.liberties) - combined_stones,
         )
 
     @property
@@ -79,6 +83,7 @@ class Board:
         self.num_cols = num_cols
         # TODO: write types
         self._grid = {}
+        self._hash = zobrist.EMPTY_BOARD
 
     def is_on_grid(self, point: Point) -> bool:
         return 1 <= point.row <= self.num_rows and 1 <= point.col <= self.num_cols
@@ -95,6 +100,10 @@ class Board:
         string = self._grid.get(point)
         return None if string is None else string
 
+    def _replace_string(self, new_string: GoString) -> None:
+        for point in new_string.stones:
+            self._grid[point] = new_string
+
     def _remove_string(self, string: GoString):
         for point in string.stones:
             for neighbor in point.neighbors():
@@ -103,8 +112,9 @@ class Board:
                     continue
                 # Removing a string can create liberties for other strings.
                 if neighbor_string is not string:
-                    neighbor_string.add_liberty(point)
+                    self._replace_string(neighbor_string.with_liberty(point))
             self._grid[point] = None
+            self._hash ^= zobrist.HASH_CODE[point, string.color]
 
     def place_stone(self, player: Player, point: Point):
         assert self.is_on_grid(point)
@@ -125,20 +135,29 @@ class Board:
                     adjacent_same_color.append(neighbor_string)
             elif neighbor_string not in adjacent_opposite_color:
                 adjacent_opposite_color.append(neighbor_string)
-        new_string = GoString(player, [point], liberties)
+
+        new_string = GoString(player, frozenset([point]), frozenset(liberties))
 
         # Merge any adjacent strings of the same color
         for same_color_string in adjacent_same_color:
             new_string = new_string.merge_with(same_color_string)
         for new_string_point in new_string.stones:
             self._grid[new_string_point] = new_string
+
+        # Apply the hash code for this point and player
+        self._hash ^= zobrist.HASH_CODE[point, player]
+
         # Reduce liberties of any adjacent strings of the opposite color.
         for other_color_string in adjacent_opposite_color:
-            other_color_string.remove_liberty(point)
-        # If any opposite-color strings now have zero liberties, remove them.
-        for other_color_string in adjacent_opposite_color:
-            if other_color_string.num_liberties == 0:
+            replacement_string = other_color_string.without_liberty(point)
+            if replacement_string.num_liberties:
+                self._replace_string(other_color_string.without_liberty(point))
+            else:
+                # If any opposite-color strings now have zero liberties, remove them.
                 self._remove_string(other_color_string)
+
+    def zobrist_hash(self):
+        return self._hash
 
 
 class GameState:
@@ -152,6 +171,13 @@ class GameState:
         self.board = board
         self.next_player = next_player
         self.previous_state = previous
+        if previous is None:
+            self.previous_states: FrozenSet[Tuple[Player, int]] = frozenset()
+        else:
+            self.previous_states = frozenset(
+                previous.previous_states
+                | {(previous.next_player, previous.board.zobrist_hash())}
+            )
         self.last_move = move
 
     # Returns the new GameState after applying the move
@@ -198,13 +224,8 @@ class GameState:
             return False
         next_board = copy.deepcopy(self.board)
         next_board.place_stone(player, move.point)
-        next_situation = (player.other, next_board)
-        past_state = self.previous_state
-        while past_state:
-            if past_state.situation == next_situation:
-                return True
-            past_state = past_state.previous_state
-        return False
+        next_situation = (player.other, next_board.zobrist_hash())
+        return next_situation in self.previous_states
 
     def is_valid_move(self, move: Move):
         if self.is_over():
@@ -212,7 +233,7 @@ class GameState:
         if move.is_pass or move.is_resign:
             return True
         return (
-            self.board.get(move.point) is None
+            self.board.get(move.point) is not None
             and not self.is_move_self_capture(self.next_player, move)
             and not self.does_move_violate_ko(self.next_player, move)
         )
